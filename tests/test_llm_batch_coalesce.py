@@ -1,4 +1,5 @@
 """Tests for llm-batch-coalesce-py."""
+
 import threading
 import pytest
 from llm_batch_coalesce import BatchCoalesce
@@ -12,9 +13,11 @@ def make_fake_llm(responses=None, call_log=None):
         responses = {"_": "default response"}
     if call_log is None:
         call_log = []
+
     def fake_llm(messages, model="", **kwargs):
         call_log.append(1)
         return {"content": "answer"}
+
     return fake_llm, call_log
 
 
@@ -82,6 +85,7 @@ def test_exception_propagates():
 def test_concurrent_same_request_coalesces():
     """Two threads hitting the same key at the same time share one call."""
     import time
+
     coalesce = BatchCoalesce()
     call_log = []
     barrier = threading.Barrier(2)
@@ -100,8 +104,10 @@ def test_concurrent_same_request_coalesces():
 
     t1 = threading.Thread(target=worker)
     t2 = threading.Thread(target=worker)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     assert len(results) == 2
     assert all(r["content"] == "shared" for r in results)
@@ -113,3 +119,69 @@ def test_concurrent_same_request_coalesces():
 def test_coalesced_count_starts_zero():
     coalesce = BatchCoalesce()
     assert coalesce.coalesced_count == 0
+
+
+def test_call_count_counts_failed_real_call():
+    """A real call that raises is still a real call and must be counted."""
+    coalesce = BatchCoalesce()
+
+    def bad_fn(messages, model="", **kwargs):
+        raise ValueError("API error")
+
+    with pytest.raises(ValueError, match="API error"):
+        coalesce.get_or_call(MSGS, bad_fn, model="x")
+
+    assert coalesce.call_count == 1
+
+
+def test_concurrent_error_propagates_to_all_waiters():
+    """Waiters coalesced onto a failing leader all observe the exception."""
+    coalesce = BatchCoalesce()
+    barrier = threading.Barrier(2)
+
+    def slow_bad_fn(messages, model="", **kwargs):
+        import time
+
+        time.sleep(0.05)
+        raise ValueError("boom")
+
+    outcomes = []
+
+    def worker():
+        barrier.wait()
+        try:
+            coalesce.get_or_call(MSGS, slow_bad_fn, model="claude")
+            outcomes.append("ok")
+        except ValueError:
+            outcomes.append("err")
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert outcomes.count("err") == 2
+    # Only one real (failed) call should have been made.
+    assert coalesce.call_count == 1
+    assert coalesce.coalesced_count == 1
+
+
+def test_wrap_preserves_function_metadata():
+    coalesce = BatchCoalesce()
+
+    @coalesce.wrap(model="claude")
+    def call_llm(messages, **kwargs):
+        """Docstring for call_llm."""
+        return {"content": "hi"}
+
+    assert call_llm.__name__ == "call_llm"
+    assert call_llm.__doc__ == "Docstring for call_llm."
+
+
+def test_in_flight_returns_to_zero_after_call():
+    coalesce = BatchCoalesce()
+    fn, _ = make_fake_llm()
+    coalesce.get_or_call(MSGS, fn, model="claude")
+    assert coalesce.in_flight == 0

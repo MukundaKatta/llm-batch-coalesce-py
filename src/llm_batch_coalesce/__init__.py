@@ -3,8 +3,10 @@ llm-batch-coalesce: Single-flight / request coalescing for LLM calls.
 
 Multiple callers asking for the same prompt at the same time share one real call.
 """
+
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import threading
@@ -12,14 +14,19 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 
-def _hash_request(messages: list[dict[str, Any]], model: str = "", **extras: Any) -> str:
+def _hash_request(
+    messages: list[dict[str, Any]], model: str = "", **extras: Any
+) -> str:
     payload = {"messages": messages, "model": model, **extras}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 @dataclass
 class _Flight:
     """An in-progress LLM call shared by multiple waiters."""
+
     event: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: Optional[BaseException] = None
@@ -46,7 +53,7 @@ class BatchCoalesce:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._flights: dict[str, _Flight] = {}
-        self._call_count = 0       # real calls made
+        self._call_count = 0  # real calls made
         self._coalesced_count = 0  # calls that waited on an in-flight request
 
     def get_or_call(
@@ -72,10 +79,14 @@ class BatchCoalesce:
                 is_leader = True
 
         if is_leader:
+            with self._lock:
+                self._call_count += 1
             try:
-                result = call_fn(messages, model=model, **extras) if model else call_fn(messages, **extras)
-                with self._lock:
-                    self._call_count += 1
+                result = (
+                    call_fn(messages, model=model, **extras)
+                    if model
+                    else call_fn(messages, **extras)
+                )
                 flight.result = result
             except BaseException as exc:
                 flight.error = exc
@@ -92,10 +103,14 @@ class BatchCoalesce:
 
     def wrap(self, model: str = "") -> Callable[..., Any]:
         """Decorator: wrap a ``call_fn(messages, **kwargs)`` with coalescing."""
+
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            @functools.wraps(fn)
             def wrapper(messages: list[dict[str, Any]], **kwargs: Any) -> Any:
                 return self.get_or_call(messages, fn, model=model, **kwargs)
+
             return wrapper
+
         return decorator
 
     @property
