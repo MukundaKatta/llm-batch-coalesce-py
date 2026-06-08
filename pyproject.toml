@@ -9,12 +9,28 @@ description = "Single-flight request coalescing for LLM calls"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
+keywords = ["llm", "coalesce", "single-flight", "request-coalescing", "deduplication"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/MukundaKatta/llm-batch-coalesce-py"
+Repository = "https://github.com/MukundaKatta/llm-batch-coalesce-py"
+Issues = "https://github.com/MukundaKatta/llm-batch-coalesce-py/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+llm_batch_coalesce = ["py.typed"]
