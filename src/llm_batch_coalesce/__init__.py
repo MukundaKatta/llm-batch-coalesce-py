@@ -17,6 +17,12 @@ from typing import Any, Callable, Optional
 def _hash_request(
     messages: list[dict[str, Any]], model: str = "", **extras: Any
 ) -> str:
+    """Return a stable SHA-256 key for a request.
+
+    The key is derived from the messages, the model, and any extra keyword
+    arguments. Two requests with the same content produce the same key
+    regardless of dict ordering, so they coalesce onto a single call.
+    """
     payload = {"messages": messages, "model": model, **extras}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
@@ -76,11 +82,12 @@ class BatchCoalesce:
             else:
                 flight = _Flight()
                 self._flights[key] = flight
+                # Count the real call up front, while we still hold the lock,
+                # so the counter and the flight registration stay in sync.
+                self._call_count += 1
                 is_leader = True
 
         if is_leader:
-            with self._lock:
-                self._call_count += 1
             try:
                 result = (
                     call_fn(messages, model=model, **extras)
@@ -115,25 +122,43 @@ class BatchCoalesce:
 
     @property
     def call_count(self) -> int:
-        """Number of real LLM calls made."""
-        return self._call_count
+        """Number of real LLM calls made (including failed ones)."""
+        with self._lock:
+            return self._call_count
 
     @property
     def coalesced_count(self) -> int:
         """Number of calls that shared an in-flight request."""
-        return self._coalesced_count
+        with self._lock:
+            return self._coalesced_count
 
     @property
     def in_flight(self) -> int:
+        """Number of distinct requests currently being executed."""
         with self._lock:
             return len(self._flights)
 
     def stats(self) -> dict[str, int]:
-        return {
-            "call_count": self._call_count,
-            "coalesced_count": self._coalesced_count,
-            "in_flight": self.in_flight,
-        }
+        """Return a consistent snapshot of all counters.
+
+        The three values are read under a single lock acquisition so the
+        snapshot is internally consistent even under concurrent access.
+        """
+        with self._lock:
+            return {
+                "call_count": self._call_count,
+                "coalesced_count": self._coalesced_count,
+                "in_flight": len(self._flights),
+            }
+
+    def reset_stats(self) -> None:
+        """Reset the ``call_count`` and ``coalesced_count`` counters to zero.
+
+        Does not affect requests that are currently in flight.
+        """
+        with self._lock:
+            self._call_count = 0
+            self._coalesced_count = 0
 
 
 __all__ = ["BatchCoalesce"]
